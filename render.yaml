@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: chat-server
+    env: node
+    region: singapore
+    buildCommand: "npm install"
+    startCommand: "npm start"
+    rootDir: server
+    envVars:
+      - key: NODE_VERSION
+        value: 18
