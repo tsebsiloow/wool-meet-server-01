@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Auth Chat (Static)</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial;background:#071021;color:#e6eef6;padding:18px}
+    .card{background:#081226;padding:12px;border-radius:8px;max-width:900px;margin:auto}
+    input,button{padding:8px;margin:4px;border-radius:6px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:inherit}
+    #messages{height:360px;overflow:auto;background:#071426;border-radius:8px;padding:10px;margin-top:10px}
+    .msg{margin-bottom:8px}
+    .you{ text-align:right }
+    .muted{color:#9aa6b2;font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>認証つきチャット（Static）</h2>
+
+    <div>
+      <input id="serverUrl" placeholder="Server URL (例: http://localhost:3000)" style="width:60%">
+      <button id="saveServer">保存</button>
+    </div>
+
+    <div id="authBox">
+      <input id="username" placeholder="ユーザー名">
+      <input id="password" placeholder="パスワード" type="password">
+      <button id="btnRegister">登録</button>
+      <button id="btnLogin">ログイン</button>
+      <div class="muted">ログインするとチャット可能になります。トークンはlocalStorageに保存されます。</div>
+    </div>
+
+    <div id="userInfo" style="display:none">
+      <div>ログイン: <span id="meName"></span> <button id="btnLogout">ログアウト</button></div>
+      <div style="margin-top:8px">
+        <button id="connectBtn">Connect Socket</button>
+        <button id="disconnectBtn" disabled>Disconnect</button>
+        <span id="status" class="muted">未接続</span>
+      </div>
+    </div>
+
+    <div id="messages"></div>
+
+    <div style="margin-top:8px">
+      <input id="inputMsg" placeholder="メッセージを入力..." style="width:70%">
+      <button id="sendBtn">送信</button>
+    </div>
+
+    <div style="margin-top:8px" class="muted">オンライン: <span id="onlineCount">0</span></div>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script>
+  (function(){
+    const serverUrlEl = document.getElementById('serverUrl');
+    const saveServerBtn = document.getElementById('saveServer');
+    const usernameEl = document.getElementById('username');
+    const passwordEl = document.getElementById('password');
+    const btnRegister = document.getElementById('btnRegister');
+    const btnLogin = document.getElementById('btnLogin');
+    const userInfo = document.getElementById('userInfo');
+    const meName = document.getElementById('meName');
+    const btnLogout = document.getElementById('btnLogout');
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    const statusEl = document.getElementById('status');
+    const messages = document.getElementById('messages');
+    const inputMsg = document.getElementById('inputMsg');
+    const sendBtn = document.getElementById('sendBtn');
+    const onlineCount = document.getElementById('onlineCount');
+
+    let socket = null;
+    const BC_CHANNEL = "chat-bc";
+    let bc = null;
+    if(window.BroadcastChannel) bc = new BroadcastChannel(BC_CHANNEL);
+
+    function getServerUrl(){ return (localStorage.getItem('chat_server') || '').trim(); }
+    function setServerUrl(v){ localStorage.setItem('chat_server', v); }
+    function getToken(){ return localStorage.getItem('chat_token'); }
+    function setToken(t){ if(t) localStorage.setItem('chat_token', t); else localStorage.removeItem('chat_token'); }
+    function renderMsg(obj, isYou=false){
+      const d = document.createElement('div');
+      d.className = 'msg' + (isYou? ' you' : '');
+      const ts = obj.createdAt ? new Date(obj.createdAt).toLocaleTimeString() : new Date().toLocaleTimeString();
+      d.textContent = `${obj.from || 'system'} • ${ts}: ${obj.text}`;
+      messages.appendChild(d);
+      messages.scrollTop = messages.scrollHeight;
+    }
+    function setStatus(s){ statusEl.textContent = s; }
+
+    serverUrlEl.value = getServerUrl();
+    saveServerBtn.addEventListener('click', ()=> setServerUrl(serverUrlEl.value.trim()));
+
+    async function api(path, method='GET', body){
+      const url = getServerUrl();
+      if(!url) throw new Error('server url missing');
+      const res = await fetch((url.replace(/\/+$/,'') + '/api' + path), {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined
+      });
+      return res.json();
+    }
+
+    btnRegister.addEventListener('click', async ()=>{
+      try {
+        const r = await api('/register', 'POST', { username: usernameEl.value, password: passwordEl.value });
+        if(r.ok) alert('登録成功'); else alert(JSON.stringify(r));
+      } catch(e){ alert('登録失敗: '+e.message); }
+    });
+
+    btnLogin.addEventListener('click', async ()=>{
+      try {
+        const r = await api('/login', 'POST', { username: usernameEl.value, password: passwordEl.value });
+        if(r.token){
+          setToken(r.token);
+          meName.textContent = r.username;
+          userInfo.style.display = '';
+          document.getElementById('authBox').style.display = 'none';
+          if(bc) bc.postMessage({ type: 'login', username: r.username });
+        } else {
+          alert('login failed: ' + JSON.stringify(r));
+        }
+      } catch(e){ alert('login error: ' + e.message); }
+    });
+
+    (function restore(){
+      const t = getToken();
+      if(t){
+        try { const payload = JSON.parse(atob(t.split('.')[1])); meName.textContent = payload.username; } catch(e){ meName.textContent = 'me'; }
+        userInfo.style.display = '';
+        document.getElementById('authBox').style.display = 'none';
+      } else {
+        userInfo.style.display = 'none';
+      }
+    })();
+
+    btnLogout.addEventListener('click', ()=>{
+      setToken(null);
+      userInfo.style.display = 'none';
+      document.getElementById('authBox').style.display = '';
+      if(bc) bc.postMessage({ type: 'logout' });
+    });
+
+    connectBtn.addEventListener('click', async ()=>{
+      const url = getServerUrl();
+      const token = getToken();
+      if(!url) return alert('Server URLを保存してください');
+      if(!token) return alert('ログインしてください');
+
+      socket = io(url, { transports: ['websocket','polling'], auth: { token } });
+
+      socket.on('connect', ()=>{ setStatus('connected'); connectBtn.disabled=true; disconnectBtn.disabled=false; });
+      socket.on('disconnect', ()=>{ setStatus('disconnected'); connectBtn.disabled=false; disconnectBtn.disabled=true; });
+      socket.on('message', payload => renderMsg(payload, payload.from === meName.textContent));
+      socket.on('system', txt => renderMsg({ from:'system', text: txt }));
+      socket.on('users', list => { onlineCount.textContent = list.length; });
+
+      socket.on('connect', async ()=>{
+        try {
+          const res = await fetch(url.replace(/\/+$/,'') + '/api/messages/recent?n=100');
+          if(res.ok){ const msgs = await res.json(); msgs.forEach(m=>renderMsg(m, m.from === meName.textContent)); }
+        } catch(e){}
+      });
+
+      if(bc){
+        bc.onmessage = ev => {
+          const msg = ev.data;
+          if(!msg) return;
+          if(msg.type === 'outgoing') renderMsg({ from: msg.from, text: msg.text, createdAt: msg.createdAt }, msg.from === meName.textContent);
+          if(msg.type === 'login') { meName.textContent = msg.username; userInfo.style.display=''; document.getElementById('authBox').style.display='none'; }
+          if(msg.type === 'logout') { setToken(null); userInfo.style.display='none'; document.getElementById('authBox').style.display=''; }
+        };
+      } else {
+        window.addEventListener('storage', ev => {
+          if(ev.key === 'chat_outgoing' && ev.newValue){
+            try{ const obj = JSON.parse(ev.newValue); renderMsg({ from: obj.from, text: obj.text, createdAt: obj.createdAt }, obj.from === meName.textContent); } catch(e){}
+          }
+        });
+      }
+    });
+
+    disconnectBtn.addEventListener('click', ()=>{ if(socket) socket.disconnect(); });
+
+    sendBtn.addEventListener('click', ()=> {
+      const v = inputMsg.value.trim();
+      if(!v) return;
+      if(!socket || !socket.connected) return alert('socket not connected');
+      const createdAt = new Date().toISOString();
+      socket.emit('message', v);
+      renderMsg({ from: meName.textContent || 'me', text: v, createdAt }, true);
+      const bcMsg = { type: 'outgoing', from: meName.textContent || 'me', text: v, createdAt };
+      if(bc) bc.postMessage(bcMsg); else localStorage.setItem('chat_outgoing', JSON.stringify(bcMsg));
+      inputMsg.value = '';
+    });
+
+    inputMsg.addEventListener('keydown',(e)=>{ if(e.key==='Enter') sendBtn.click(); });
+    window.addEventListener('focus', ()=> { try { localStorage.removeItem('chat_outgoing'); } catch(e){} });
+
+  })();
+  </script>
+</body>
+</html>
